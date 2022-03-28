@@ -5,34 +5,33 @@
 
 using namespace std;
 
-void opd(double * hists, int num_hists, double const * values, int num_values) {
-    for (int j = 0; j < num_hists; j++) {
-        hists[j] = 0;
-    }
-    double min = numeric_limits<double>::max();
-    double max = numeric_limits<double>::min();
-    for (int i = 0; i < num_values; i++) {
-        if (values[i] < min) {
-            min = values[i];
+double count_distrib(double * hists, unsigned num_hists, double const * values, unsigned num_values, double dev_from) {
+    auto min = numeric_limits<double>::max();
+    auto max = numeric_limits<double>::min();
+    for (int j = 0; j < num_values; j++) {
+        if (values[j] < min) {
+            min = values[j];
         }
-        if (values[i] > max) {
-            max = values[i];
+        if (values[j] > max) {
+            max = values[j];
         }
     }
     auto dv = (max - min) / (double) (num_hists - 1);
-    for (int i = 0; i < num_values; i++) {
-        hists[(int) roundevenf((values[i] - min) / dv)] += 1;
+    for (int j = 0; j < num_values; j++) {
+        hists[(int) round((values[j] - min) / dv)] += 1;
     }
+    return (dev_from - min) / dv;
 }
 
-void pdf(double * hists, int num_hists, double const * values, int num_values) {
-    opd(hists, num_hists, values, num_values);
-    for (int j = 0; j < num_hists; j++) {
+double pdf(double * hists, unsigned num_hists, double const * values, unsigned num_values, double dev_from) {
+    auto value_idx = count_distrib(hists, num_hists, values, num_values, dev_from);
+    for (unsigned j = 0; j < num_hists; j++) {
         hists[j] /= (double) num_values;
     }
+    return value_idx;
 }
 
-void print_opd(double const * hists, int num_hists) {
+void print_int_distrib(double const * hists, unsigned num_hists) {
     for (int i = 0; i < num_hists; i++) {
         for (int j = 0; j < (int) hists[i]; j++) {
             cout << "|";
@@ -41,18 +40,17 @@ void print_opd(double const * hists, int num_hists) {
     }
 }
 
-double std_dev(double const * values, int num_values, double mean) {
-    double std_dev = 0;
-    for (int i = 0; i < num_values; i++) {
-        auto delta = values[i] - mean;
-        std_dev = fma(delta, delta, std_dev);
+double dispersion(double const * values, unsigned num_values, double dev_from) {
+    double sum = 0;
+    for (unsigned i = 0; i < num_values; i++) {
+        auto delta = values[i] - dev_from;
+        sum = fma(delta, delta, sum);
     }
-    return sqrt(std_dev / (double) num_values);
+    return sum / (double) num_values;
 }
 
-double read_pdf(double * hists, int num_hists) {
-    ifstream file("../data.csv");
-    auto values = new double[300];
+unsigned read_data(double * values) {
+    ifstream file("../raw.csv");
     int num_values = 0;
     if (file.is_open()) {
         while (file >> values[num_values]) {
@@ -60,17 +58,16 @@ double read_pdf(double * hists, int num_hists) {
         }
     }
     file.close();
-    pdf(hists, num_hists, values, num_values);
-    auto sigma = std_dev(values, num_values, 500);
-    return 2 * sigma * sigma;
+    return num_values;
 }
 
-double maxwell_pdf(double * hists, int num_hists, double T) {
+double maxwell_pdf(double * hists, unsigned num_hists, double T) {
+    auto dev_from_idx = 0.5 * (double) (num_hists - 1);
     for (int i = 0; i < num_hists; i++) {
-        auto v = (double) i - 0.5 * (double) (num_hists - 1);
+        auto v = dev_from_idx - (double) i;
         hists[i] = exp(-v * v / T) / sqrt(T * numbers::pi);
     }
-    return T;
+    return dev_from_idx;
 }
 
 double mean_direct(double const * psi, double const * pdf, unsigned size) {
@@ -89,10 +86,10 @@ double mean_fma(double const * psi, double const * pdf, unsigned size) {
     return sum;
 }
 
-double mean_rec(double const * psi, double const * pdf, unsigned s) {
+double mean_recurse(double const * psi, double const * pdf, unsigned s) {
     if (s == 1) return psi[0] * pdf[0];
     auto h = s / 2;
-    return mean_rec(psi, pdf, h) + mean_rec(&psi[h], &pdf[h], s - h);
+    return mean_recurse(psi, pdf, h) + mean_recurse(&psi[h], &pdf[h], s - h);
 }
 
 double mean_kahan(double const * psi, double const * pdf, unsigned s) {
@@ -107,22 +104,50 @@ double mean_kahan(double const * psi, double const * pdf, unsigned s) {
     return sum;
 }
 
+void test_mean(double const * pdf, unsigned size, double v0, double T) {
+    cout << "mean " << v0 << " from 0 to " << size - 1 << endl;
+    auto psi = new double[size];
+    for (int i = 0; i < size; i++) {
+        psi[i] = abs(v0 - (double) i);
+    }
+    cout << "T: " << T << endl;
+    cout << "expected mean: " << sqrt(T / numbers::pi) << endl;
+    cout << "mean directly: " << mean_direct(psi, pdf, size) << endl;
+    cout << "mean by fma: " << mean_fma(psi, pdf, size) << endl;
+    cout << "mean by recursion: " << mean_recurse(psi, pdf, size) << endl;
+    cout << "mean by Kahan: " << mean_kahan(psi, pdf, size) << endl;
+    delete[] psi;
+}
+
+double test_data(unsigned num_hists) {
+    cout << " --- testing raw.csv --- " << endl;
+
+    double values[273];
+    auto num_values = read_data(values);
+    double expected = 500;
+    auto T = 2 * dispersion(values, num_values, expected);
+
+    auto hists = new double[num_hists] {0};
+    auto expected_idx = pdf(hists, num_hists, values, num_values, expected);
+    test_mean(hists, num_hists, expected_idx, T);
+    delete[] hists;
+
+    cout << endl;
+    return T;
+}
+
+void test_maxwell(unsigned num_hists, double T) {
+    cout << " --- testing maxwell distribution --- " << endl;
+
+    auto hists = new double[num_hists];
+    auto value_idx = maxwell_pdf(hists, num_hists, T);
+    test_mean(hists, num_hists, value_idx, T);
+
+    cout << endl;
+}
+
 int main() {
     auto s = 100;
-    auto distrib = new double[s];
-    auto T = maxwell_pdf(distrib, s, 5);
-    cout << "T: " << T << endl;
-    cout << "expectation: " << sqrt(T / numbers::pi) << endl;
-    auto psi = new double[s];
-    for (int i = 0; i < s; i++) {
-        auto v = (double) i - 0.5 * (double) (s - 1);
-        psi[i] = abs(v);
-//        psi[i] = 1;
-    }
-    cout << "mean direct: " << mean_direct(psi, distrib, s) << endl;
-    cout << "mean by fma: " << mean_fma(psi, distrib, s) << endl;
-    cout << "mean by recursion: " << mean_rec(psi, distrib, s) << endl;
-    cout << "mean by Kahan: " << mean_kahan(psi, distrib, s) << endl;
-    delete[] psi;
-    delete[] distrib;
+    auto T = test_data(s);
+    test_maxwell(s, T);
 }
